@@ -78,9 +78,6 @@ func run(ctx context.Context) int {
 		return 1
 	}
 
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-
 	errg, ctx := errgroup.WithContext(ctx)
 	defer errg.Wait()
 
@@ -114,26 +111,26 @@ func run(ctx context.Context) int {
 		NewWithIdentifier(gatewayID).
 		WithContext(ctx)
 
-	guildCh := make(chan *gateway.GuildCreateEvent)
-	session.AddSyncHandler(guildCh)
-
-	readyCh := make(chan *gateway.ReadyEvent)
-	session.AddSyncHandler(readyCh)
-
-	startupTimeout := time.After(5 * time.Second)
+	var (
+		msgCh               = make(chan *gateway.MessageCreateEvent)
+		readyCh             = make(chan *gateway.ReadyEvent)
+		guildCh             = make(chan *gateway.GuildCreateEvent)
+		readySupplementalCh = make(chan *gateway.ReadySupplementalEvent)
+	)
 
 	errg.Go(func() error {
-		msgCh := make(chan *gateway.MessageCreateEvent)
-
 		bot := botState{botSettings: settings}
-		trySubscribe := func() {
+		trySubscribe := func() bool {
 			if bot.TargetGuildID.IsValid() {
-				return
+				return true
 			}
 
 			ch, err := session.Cabinet.Channel(settings.TargetChannelID)
 			if err != nil {
-				return
+				slog.Info(
+					"The bot tried to get the target channel, but it failed.",
+					"err", err)
+				return false
 			}
 
 			bot.TargetGuildID = ch.GuildID
@@ -145,8 +142,11 @@ func run(ctx context.Context) int {
 				"Bot has subscribed to the target channel's guild. It is now ready to serve.",
 				"guild_id", ch.GuildID,
 				"channel_id", bot.TargetChannelID)
+
+			return true
 		}
 
+		startupTimeout := time.After(10 * time.Second)
 		for {
 			select {
 			case <-ctx.Done():
@@ -166,6 +166,9 @@ func run(ctx context.Context) int {
 				// When the bot comes online, immediately start subscribing to
 				// the guild that it cares about. This tells Discord to start
 				// sending us message events for that guild.
+				trySubscribe()
+
+			case <-readySupplementalCh:
 				trySubscribe()
 
 			case <-guildCh:
@@ -265,7 +268,7 @@ func run(ctx context.Context) int {
 
 	if err := errg.Wait(); err != nil {
 		// Try to extract the cause of the cancellation, if any.
-		if cause := context.Cause(ctx); cause != nil {
+		if cause := context.Cause(ctx); cause != nil && cause != ctx.Err() {
 			err = cause
 		}
 
