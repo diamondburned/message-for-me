@@ -328,13 +328,27 @@ func parseCommand(dsession *ningen.State, bot botState, msg *gateway.MessageCrea
 	// We shouldn't need to.
 	dsession = dsession.Offline()
 
+	// Ignore DMs.
+	if !msg.GuildID.IsValid() {
+		return nil, nil
+	}
+
+	if msg.Member == nil {
+		slog.Warn(
+			"Bot has received a guild message without the Member object. It won't be able to work.",
+			"channel_id", msg.ChannelID,
+			"guild_id", msg.GuildID)
+
+		return nil, nil
+	}
+
 	// The message must come from the same guild.
-	if msg.Member == nil || msg.GuildID != bot.TargetGuildID {
+	if msg.GuildID != bot.TargetGuildID {
 		return nil, nil
 	}
 
 	// The message must explicitly mention it.
-	if dsession.MessageMentions(&msg.Message)&ningen.MessageMentions == 0 {
+	if !slices.ContainsFunc(msg.Mentions, func(u discord.GuildUser) bool { return u.ID == bot.SelfID }) {
 		return nil, nil
 	}
 
