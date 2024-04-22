@@ -114,9 +114,6 @@ func run(ctx context.Context) int {
 		NewWithIdentifier(gatewayID).
 		WithContext(ctx)
 
-	msgCh := make(chan *gateway.MessageCreateEvent)
-	session.AddSyncHandler(msgCh)
-
 	guildCh := make(chan *gateway.GuildCreateEvent)
 	session.AddSyncHandler(guildCh)
 
@@ -126,6 +123,8 @@ func run(ctx context.Context) int {
 	startupTimeout := time.After(5 * time.Second)
 
 	errg.Go(func() error {
+		msgCh := make(chan *gateway.MessageCreateEvent)
+
 		bot := botState{botSettings: settings}
 		trySubscribe := func() {
 			if bot.TargetGuildID.IsValid() {
@@ -140,6 +139,8 @@ func run(ctx context.Context) int {
 			bot.TargetGuildID = ch.GuildID
 
 			session.MemberState.Subscribe(ch.GuildID)
+			session.AddSyncHandler(msgCh)
+
 			slog.Info(
 				"Bot has subscribed to the target channel's guild. It is now ready to serve.",
 				"guild_id", ch.GuildID,
@@ -174,10 +175,12 @@ func run(ctx context.Context) int {
 				command, err := parseCommand(session, bot, ev)
 				if err != nil {
 					slog.Debug(
-						"Bot has received an invalid command. It will ignore the message.",
-						"content", ev.Content,
+						"Bot was unable to parse the command due to an internal error.",
+						"channel_id", ev.ChannelID,
 						"err", err)
-					// Ignore the message.
+					continue
+				}
+				if command == nil {
 					continue
 				}
 
