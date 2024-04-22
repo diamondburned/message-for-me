@@ -97,7 +97,7 @@ func run(ctx context.Context) int {
 	gatewayID.Capabilities = 253 // magic constant from reverse-engineering
 	gatewayID.Properties = gateway.IdentifyProperties{
 		OS:      runtime.GOOS,
-		Browser: "Arikawa",
+		Browser: "message-for-me",
 		Device:  "message-for-me",
 	}
 	gatewayID.Presence = &gateway.UpdatePresenceCommand{
@@ -146,14 +146,11 @@ func run(ctx context.Context) int {
 			return true
 		}
 
-		startupTimeout := time.After(10 * time.Second)
+		var startupTimeout <-chan time.Time
 		for {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-
-			case <-startupTimeout:
-				return fmt.Errorf("bot has failed to start up in time")
 
 			case ev := <-readyCh:
 				bot.SelfID = ev.User.ID
@@ -166,7 +163,14 @@ func run(ctx context.Context) int {
 				// When the bot comes online, immediately start subscribing to
 				// the guild that it cares about. This tells Discord to start
 				// sending us message events for that guild.
-				trySubscribe()
+				if !trySubscribe() {
+					// If the subscription failed, try again later.
+					startupTimeout = time.After(30 * time.Second)
+					continue
+				}
+
+			case <-startupTimeout:
+				return fmt.Errorf("bot has failed to start up in time")
 
 			case <-readySupplementalCh:
 				trySubscribe()
