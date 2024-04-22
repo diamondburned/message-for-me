@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -97,6 +98,11 @@ func run(ctx context.Context) int {
 
 	gatewayID := gateway.DefaultIdentifier(token)
 	gatewayID.Capabilities = 253 // magic constant from reverse-engineering
+	gatewayID.Properties = gateway.IdentifyProperties{
+		OS:      runtime.GOOS,
+		Browser: "Arikawa",
+		Device:  "message-for-me",
+	}
 	gatewayID.Presence = &gateway.UpdatePresenceCommand{
 		// Mark that the bot is perpetually AFK so that it doesn't block any
 		// notifications from arriving.
@@ -111,18 +117,46 @@ func run(ctx context.Context) int {
 	msgCh := make(chan *gateway.MessageCreateEvent)
 	session.AddSyncHandler(msgCh)
 
+	guildCh := make(chan *gateway.GuildCreateEvent)
+	session.AddSyncHandler(guildCh)
+
 	readyCh := make(chan *gateway.ReadyEvent)
 	session.AddSyncHandler(readyCh)
 
+	startupTimeout := time.After(5 * time.Second)
+
 	errg.Go(func() error {
 		bot := botState{botSettings: settings}
+		trySubscribe := func() {
+			if bot.TargetGuildID.IsValid() {
+				return
+			}
+
+			ch, err := session.Cabinet.Channel(settings.TargetChannelID)
+			if err != nil {
+				return
+			}
+
+			bot.TargetGuildID = ch.GuildID
+
+			session.MemberState.Subscribe(ch.GuildID)
+			slog.Info(
+				"Bot has subscribed to the target channel's guild. It is now ready to serve.",
+				"guild_id", ch.GuildID,
+				"channel_id", bot.TargetChannelID)
+		}
 
 		for {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 
+			case <-startupTimeout:
+				return fmt.Errorf("bot has failed to start up in time")
+
 			case ev := <-readyCh:
+				bot.SelfID = ev.User.ID
+
 				slog.Info(
 					"This bot is online. It is preparing to serve.",
 					"bot_id", ev.User.ID,
@@ -131,30 +165,17 @@ func run(ctx context.Context) int {
 				// When the bot comes online, immediately start subscribing to
 				// the guild that it cares about. This tells Discord to start
 				// sending us message events for that guild.
-				ch, err := session.Cabinet.Channel(settings.TargetChannelID)
-				if err != nil {
-					slog.Error(
-						"This bot failed to fetch the target channel from the state. It needs this information to function.",
-						"channel_id", bot.TargetChannelID,
-						"err", err)
-					return errMalfunction
-				}
+				trySubscribe()
 
-				bot.TargetGuildID = ch.GuildID
-				bot.SelfID = ev.User.ID
+			case <-guildCh:
+				trySubscribe()
 
-				session.MemberState.Subscribe(ch.GuildID)
-				slog.Info(
-					"Bot has subscribed to the target channel's guild. It is now ready to serve.",
-					"guild_id", ch.GuildID,
-					"channel_id", bot.TargetChannelID)
-
-			case msg := <-msgCh:
-				command, err := parseCommand(session, bot, msg)
+			case ev := <-msgCh:
+				command, err := parseCommand(session, bot, ev)
 				if err != nil {
 					slog.Debug(
 						"Bot has received an invalid command. It will ignore the message.",
-						"content", msg.Content,
+						"content", ev.Content,
 						"err", err)
 					// Ignore the message.
 					continue
@@ -162,8 +183,8 @@ func run(ctx context.Context) int {
 
 				slog.Info(
 					"This bot has received a valid command.",
-					"author.id", msg.Author.ID,
-					"author.tag", msg.Author.Tag(),
+					"author.id", ev.Author.ID,
+					"author.tag", ev.Author.Tag(),
 					"command", command.Command,
 					"body", command.Body)
 
@@ -172,7 +193,7 @@ func run(ctx context.Context) int {
 					// For announcing a new message, ensure that the global rate
 					// limit is respected.
 					if time.Since(bot.LastAnnouncedTime) < bot.MinAnnounceTimeGap {
-						sendReply(session, msg, "please wait before sending another announcement.")
+						sendReply(session, ev, "please wait before sending another announcement.")
 						continue
 					}
 
@@ -183,7 +204,7 @@ func run(ctx context.Context) int {
 							"channel_id", bot.TargetChannelID,
 							"err", err)
 
-						replyInternalError(session, msg)
+						replyInternalError(session, ev)
 						continue
 					}
 
@@ -191,31 +212,31 @@ func run(ctx context.Context) int {
 					bot.LastAnnouncedTime = time.Now()
 
 					// Send a reply to the author.
-					sendReply(session, msg, "the announcement has been sent.")
+					sendReply(session, ev, "the announcement has been sent.")
 
 					// Store the last message sent by the author.
-					if err := lastSentAuthors.Store(msg.Author.ID, target.ID); err != nil {
+					if err := lastSentAuthors.Store(ev.Author.ID, target.ID); err != nil {
 						slog.Warn(
 							"Bot has failed to store the last message sent by the author.",
-							"author_id", msg.Author.ID,
+							"author_id", ev.Author.ID,
 							"err", err)
 					}
 
 				case "edit":
 					// Look up the last message sent by the author.
-					lastSent, ok, err := lastSentAuthors.Load(msg.Author.ID)
+					lastSent, ok, err := lastSentAuthors.Load(ev.Author.ID)
 					if err != nil {
 						slog.Error(
 							"Bots has failed to look up the last message sent by the author.",
-							"author_id", msg.Author.ID,
+							"author_id", ev.Author.ID,
 							"err", err)
 
-						replyInternalError(session, msg)
+						replyInternalError(session, ev)
 						continue
 					}
 
 					if !ok {
-						sendReply(session, msg, "this bot could not find the last announcement you sent.")
+						sendReply(session, ev, "this bot could not find the last announcement you sent.")
 						continue
 					}
 
@@ -226,7 +247,7 @@ func run(ctx context.Context) int {
 							"message_id", lastSent,
 							"err", err)
 
-						replyInternalError(session, msg)
+						replyInternalError(session, ev)
 						continue
 					}
 				}
