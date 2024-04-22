@@ -113,9 +113,9 @@ func run(ctx context.Context) int {
 
 	var (
 		msgCh               = make(chan *gateway.MessageCreateEvent)
-		readyCh             = make(chan *gateway.ReadyEvent)
-		guildCh             = make(chan *gateway.GuildCreateEvent)
-		readySupplementalCh = make(chan *gateway.ReadySupplementalEvent)
+		readyCh             = newEventChannel[*gateway.ReadyEvent](session)
+		guildCh             = newEventChannel[*gateway.GuildCreateEvent](session)
+		readySupplementalCh = newEventChannel[*gateway.ReadySupplementalEvent](session)
 	)
 
 	errg.Go(func() error {
@@ -181,7 +181,7 @@ func run(ctx context.Context) int {
 			case ev := <-msgCh:
 				command, err := parseCommand(session, bot, ev)
 				if err != nil {
-					slog.Debug(
+					slog.Warn(
 						"Bot was unable to parse the command due to an internal error.",
 						"channel_id", ev.ChannelID,
 						"err", err)
@@ -266,7 +266,7 @@ func run(ctx context.Context) int {
 	})
 
 	errg.Go(func() error {
-		slog.Debug("Bot is now connecting to Discord.")
+		slog.Info("Bot is now connecting to Discord.")
 		return session.Connect(ctx)
 	})
 
@@ -300,6 +300,12 @@ func sendReply(session *ningen.State, msg *gateway.MessageCreateEvent, content s
 			"author_id", msg.Author.ID,
 			"err", err)
 	}
+}
+
+func newEventChannel[T gateway.Event](session *ningen.State) <-chan T {
+	ch := make(chan T)
+	session.AddSyncHandler(ch)
+	return ch
 }
 
 // parsedCommand describes a parsed command from a message.
