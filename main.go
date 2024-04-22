@@ -112,10 +112,9 @@ func run(ctx context.Context) int {
 		WithContext(ctx)
 
 	var (
-		msgCh               = make(chan *gateway.MessageCreateEvent)
-		readyCh             = newEventChannel[*gateway.ReadyEvent](session)
-		guildCh             = newEventChannel[*gateway.GuildCreateEvent](session)
-		readySupplementalCh = newEventChannel[*gateway.ReadySupplementalEvent](session)
+		msgCh   = make(chan *gateway.MessageCreateEvent)
+		readyCh = newEventChannel[*gateway.ReadyEvent](session)
+		guildCh = newEventChannel[*gateway.GuildCreateEvent](session)
 	)
 
 	errg.Go(func() error {
@@ -127,7 +126,7 @@ func run(ctx context.Context) int {
 
 			ch, err := session.Cabinet.Channel(settings.TargetChannelID)
 			if err != nil {
-				slog.Info(
+				slog.Warn(
 					"The bot tried to get the target channel, but it failed.",
 					"err", err)
 				return false
@@ -171,9 +170,6 @@ func run(ctx context.Context) int {
 
 			case <-startupTimeout:
 				return fmt.Errorf("bot has failed to start up in time")
-
-			case <-readySupplementalCh:
-				trySubscribe()
 
 			case <-guildCh:
 				trySubscribe()

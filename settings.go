@@ -17,7 +17,7 @@ type botSettings struct {
 }
 
 var settings = botSettings{
-	TargetChannelID: 710225099923521558, // #announcements
+	TargetChannelID: 710342070342254613, // #announcements
 
 	AllowedRoleIDs: []discord.RoleID{
 		808121046028779602, // @Dev Board
